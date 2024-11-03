@@ -69,9 +69,7 @@ def authenticate_google_calendar():
             pickle.dump(creds, token)
     return build('calendar', 'v3', credentials=creds)
 
-# gc = authenticate_google_calendar()
-
-def create_event(summary, location, start_time, end_time, attendees=None):
+def create_event(summary, location, start_time, end_time, gc, attendees=None):
     event = {
         'summary': summary,
         'location': location,
@@ -82,7 +80,6 @@ def create_event(summary, location, start_time, end_time, attendees=None):
     event = gc.events().insert(calendarId='primary', body=event).execute()
     print('Event created: %s' % (event.get('htmlLink')))
 
-print("enter")
 
 class PersonalAIAssistant:
     def __init__(self, config_path='config.ini'):
@@ -102,9 +99,9 @@ class PersonalAIAssistant:
         self.read_pdf_thread = client.beta.threads.create()
 
         # # Load and prompt for missing configuration directly as class attributes
-        # self.api_key = self.get_or_request_info('openai', 'api_key', "Enter your OpenAI API key: ", secret=True)
-        # self.email_address = self.get_or_request_info('email', 'address', "Enter your email address: ")
-        # self.email_password = self.get_or_request_info('email', 'password', "Enter your email password: ", secret=True)
+        self.api_key = self.get_or_request_info('openai', 'api_key', "Enter your OpenAI API key: ", secret=True)
+        self.email_address = self.get_or_request_info('email', 'address', "Enter your email address: ")
+        self.email_password = self.get_or_request_info('email', 'password', "Enter your email password: ", secret=True)
 
     def load_config(self):
         if not os.path.exists(self.config_path):
@@ -165,15 +162,81 @@ class PersonalAIAssistant:
 
             # print(to_email, subject, body)
 
-            self.send_email(to_email, subject, body)
-        # elif intent == "schedule_meeting":
-        #     self.schedule_meeting(response)
+            return self.send_email(to_email, subject, body)
+        elif intent == "schedule_meeting":
+            message = client.beta.threads.messages.create(
+                thread_id=self.schedule_meeting_thread.id,
+                role="user",
+                content=f"Now the user will schedule meeting on calendar. Here's the entered information from user: '{response}'\n\n .f"
+            )
+            run = client.beta.threads.runs.create_and_poll(
+                thread_id=self.schedule_meeting_thread.id,
+                assistant_id=self.assistant.id,
+                instructions="Please extract the meeting information from users input and only return the formatted response as the following format: **Summary:** \n **Location:** \n **Start Time:** 2024-11-05T10:00:00-07:00 \n  **End Time:** 2024-11-09T10:00:00-07:00 "
+            )
+            if run.status == 'completed':
+                messages = client.beta.threads.messages.list(
+                    thread_id=self.schedule_meeting_thread.id
+                )
+                print(messages.data[0].content[0].text.value)
+                text = messages.data[0].content[0].text.value
+            summary_match = re.search(r"\*\*Summary:\*\*\s*(.*)", text)
+            summary = summary_match.group(1).strip() if summary_match else None
+            location_match = re.search(r"\*\*Location:\*\*(.*)", text)
+            location = location_match.group(1).strip() if location_match else None
+            start_time_match = re.search(r"\*\*Start Time:\*\*(.*)", text)
+            start_time = start_time_match.group(1).strip() if start_time_match else None
+            end_time_match = re.search(r'\*\*End Time:\*\*(.*)', text)
+            end_time = end_time_match.group(1).strip() if end_time_match else None
+            print ("summary meeting: ", summary, location, start_time, end_time)
+            print(f"You have succesffully scheduled meeting with the following information: \n {text}")
+            # self.schedule_meeting(summary, location, start_time, end_time)
         elif intent == "search_internet":
+            message = client.beta.threads.messages.create(
+                thread_id=self.send_email_thread.id,
+                role="user",
+                content=f"Now the user will search on internet, here's the entered information: '{response}'\n\n .f"
+            )
+            run = client.beta.threads.runs.create_and_poll(
+                thread_id=self.send_email_thread.id,
+                assistant_id=self.assistant.id,
+                instructions="Please extract and only return the formatted query as the following format: **Query:** \n **Number of Display Results** "
+            )
+            if run.status == 'completed':
+                messages = client.beta.threads.messages.list(
+                    thread_id=self.send_email_thread.id
+                )
+                print(messages.data[0].content[0].text.value)
+                text = messages.data[0].content[0].text.value
+            query_match = re.search(r"\*\*Query:\*\*\s*(.*)", text)
+            display_match = re.search(r"\*\*Number of Display Result:\*\*\s*(.*)", text)
+            query = query_match.group(1).strip() if query_match else None
+            display = display_match.group(1).strip() if display_match else None
+            print("Query:", query, display)
             return self.search_internet(response)
-        # elif intent == "read_pdf":
-        #     return self.read_pdf(response)
-        # else:
-        #     return "Your action is beyond my capability, I'm not sure how to help with that."
+        elif intent == "read_pdf":
+            message = client.beta.threads.messages.create(
+                thread_id=self.read_pdf_thread.id,
+                role="user",
+                content=f"Now the user will read multiple PDF files, and ask questions. Here's the entered information from user: '{response}'\n\n .f"
+            )
+            run = client.beta.threads.runs.create_and_poll(
+                thread_id=self.read_pdf_thread.id,
+                assistant_id=self.assistant.id,
+                instructions="Please extract and only return the formatted user question as the following format (ignore the part that demands reading pdf, only return the question that based on the pdf) : **Question:** \n "
+            )
+            if run.status == 'completed':
+                messages = client.beta.threads.messages.list(
+                    thread_id=self.read_pdf_thread.id
+                )
+                print(messages.data[0].content[0].text.value)
+                text = messages.data[0].content[0].text.value
+            question_match = re.search(r"\*\*Question:\*\*\s*(.*)", text)
+            question = question_match.group(1).strip() if question_match else None
+            print("Question:", question)
+            return self.read_pdf("./", question, "pdfread")
+        else:
+            return "Your action is beyond my capability, I'm not sure how to help with that."
 
     def parse_intent(self, user_input):
         try:
@@ -183,16 +246,6 @@ class PersonalAIAssistant:
               role="user",
               content=f"Classify the intent of this user request: '{user_input}'\n\n . Just reply in the following four categories: send_email, schedule_meeting, search_internet, read_pdf"
             )
-            # response = openai.chat.completions.create(
-            #     model = "gpt-4o",
-            #     messages=[
-            #         {
-            #             "role": "user",
-            #             "content": f"Classify the intent of this user request: '{user_input}'\n\n . Just reply in the following four categories: send_email, schedule_meeting, search_internet, read_pdf",
-            #         }
-            #     ],
-            # )
-            # return response.choices[0].message.content
             run = client.beta.threads.runs.create_and_poll(
                 thread_id=self.main_thread.id,
                 assistant_id=self.assistant.id,
@@ -229,16 +282,19 @@ class PersonalAIAssistant:
         server.quit()
         print("Email sent to", recipient)
 
-    def schedule_meeting(self, details):
+    def schedule_meeting(self, summary, location, start_time, end_time):
         # Extract details and schedule a meeting
         print("Scheduling a meeting...")
-        create_event('Team Meeting', 'Office 21', '2024-11-05T10:00:00-07:00', '2024-11-05T11:00:00-07:00',
-                     ['ryanbowz@outlook.com'])
+        gc = authenticate_google_calendar()
+
+        # create_event('Team Meeting', 'Office 21', '2024-11-05T10:00:00-07:00', '2024-11-05T11:00:00-07:00',
+        #              gc, [self.email_address])
+        create_event(summary, location, start_time, end_time, gc, [self.email_address])
 
     def search_internet(self, query):
         # Perform an internet search and return the results
         print("Searching the internet...")
-        results = search("Python", num_results=5, advanced=True)
+        results = search(query, num_results=10, advanced=True)
 
         # Print the search results
         for result in results:
@@ -265,7 +321,7 @@ class PersonalAIAssistant:
             # store each document in a vector embedding database
             for i, chunk in enumerate(chunks):
                 d = chunk.page_content
-                print(f"Chunk {i}: {d}")
+                # print(f"Chunk {i}: {d}")
                 response = ollama.embeddings(model="llama3.1", prompt=d)
                 embedding = response["embedding"]
                 # print(f"embedding: {embedding}")
@@ -307,5 +363,9 @@ class PersonalAIAssistant:
 # Example of using the assistant
 print("=================Welcome to personal assistant==============")
 assistant = PersonalAIAssistant()
-response = assistant.handle_query("Send an email to John Doe subject 'Meeting Update' with the body 'Please see the attached document for details.'")
-print(response)
+# response = assistant.handle_query("Send an email to John Doe subject 'Meeting Update' with the body 'Please see the attached document for details.'")
+# response = assistant.handle_query("Please help me search online about information on the weather of New York City today")
+#response = assistant.handle_query("Read the pdfs and answer me what's the main topics of them?")
+response = assistant.handle_query("Please help me schedule a metting on Zachary Building with topic of LLM programming, start on 10 am of Nov 13th, 2024 and end on 5 pm of Nov 13th, 2024")
+
+# print(response)
